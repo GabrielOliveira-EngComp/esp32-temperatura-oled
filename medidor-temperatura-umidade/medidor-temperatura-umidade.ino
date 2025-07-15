@@ -1,151 +1,207 @@
-// --- WIFI ---
+// === Bibliotecas ===
 #include <WiFi.h>
-const char* ssid = "Nome da sua rede";        // troque pelo nome da sua rede
-const char* password = "Senha da sua rede";   // troque pela senha da sua rede
-WiFiClient espClient;
-
-// --- MQTT ---
 #include <PubSubClient.h>
-const char* mqtt_Broker = "iot.eclipse.org";
-const char* mqtt_ClientID = "esp32-thermo-gabriel";
-PubSubClient client(espClient);
-const char* topicoTemperatura = "gabriel/temperatura";
-const char* topicoUmidade = "gabriel/umidade";
-
-// --- DHT22 ---
 #include <DHT.h>
-#define DHTPIN 9
-#define DHTTYPE DHT22
-DHT dht(DHTPIN, DHTTYPE);
-float temperatura = 0;
-float umidade = 0;
-
-// --- DISPLAY OLED ---
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+
+// === Wi-Fi ===
+const char* ssid     = "Nome da rede";
+const char* password = "Senha da rede";
+WiFiClient espClient;
+
+// === MQTT ===
+const char* mqtt_Broker   = "iot.eclipse.org";      // altere se desejar
+const char* mqtt_ClientID = "esp32-thermo-gabriel";
+const char* topTemp = "gabriel/temperatura";
+const char* topUmid = "gabriel/umidade";
+PubSubClient client(espClient);
+
+// === DHT22 ===
+#define DHTPIN 4            // GPIO seguro
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+float temperatura = NAN;
+float umidade     = NAN;
+
+// === OLED ===
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
-#define OLED_SDA 18
-#define OLED_SCL 46
+#define OLED_SDA   18
+#define OLED_SCL   46
 TwoWire I2COLED = TwoWire(0);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &I2COLED, OLED_RESET);
 
+// === Temporização ===
+unsigned long ultimaTentativaMQTT = 0;
+const unsigned long intervaloMQTT = 30000;   // 30 s
+unsigned long ultimoRefresh       = 0;
+const unsigned long intervaloLoop = 1500;    // 1,5 s
+
+// ---------------------------------------------------------------------------
+// SETUP
+// ---------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  Serial.println("Iniciando sistema...");
+  Serial.println("=== Iniciando ===");
 
   I2COLED.begin(OLED_SDA, OLED_SCL, 400000);
   configurarDisplay();
   dht.begin();
 
-  conectarWifi();
+  conectarWiFi();
   client.setServer(mqtt_Broker, 1883);
 }
 
+// ---------------------------------------------------------------------------
+// LOOP
+// ---------------------------------------------------------------------------
 void loop() {
-  if (!client.connected()) {
-    reconectarMQTT();
+  // 1) Reconecta Wi-Fi se cair
+  if (WiFi.status() != WL_CONNECTED) {
+    conectarWiFi();
   }
 
-  client.loop();  // importante para manter a conexão ativa
+  // 2) Tenta MQTT de 30 em 30 s (não bloqueia)
+  if (!client.connected() && millis() - ultimaTentativaMQTT > intervaloMQTT) {
+    ultimaTentativaMQTT = millis();
+    reconectarMQTT();
+  }
+  client.loop();   // mantém pilha MQTT viva
 
-  medirTemperaturaUmidade();
-  mostrarTemperaturaUmidade();
-  publicarTemperaturaUmidade();
-  delay(5000);
+  // 3) Leitura + display + MQTT a cada 1,5 s
+  if (millis() - ultimoRefresh > intervaloLoop) {
+    ultimoRefresh = millis();
+    medirSensor();
+    mostrarDisplay();
+    publicarMQTT();
+  }
 }
 
-void conectarWifi() {
+// ---------------------------------------------------------------------------
+// FUNÇÕES
+// ---------------------------------------------------------------------------
+void conectarWiFi() {
+  Serial.print("Wi-Fi: "); Serial.println(ssid);
+
+  display.clearDisplay();
   display.setTextSize(2);
   display.setCursor(0, 0);
-  display.print("Conectando ");
+  display.print("WiFi...");
   display.display();
 
   WiFi.begin(ssid, password);
-  Serial.print("Conectando");
-
-  while (WiFi.status() != WL_CONNECTED) {
+  byte tent = 0;
+  while (WiFi.status() != WL_CONNECTED && tent < 20) { // ~10 s
     delay(500);
-    display.print(".");
-    display.display();
     Serial.print(".");
+    tent++;
   }
 
-  Serial.println("\nWiFi conectado!");
   display.clearDisplay();
   display.setCursor(0, 0);
-  display.print("WiFi OK");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ Wi-Fi OK");
+    display.print("WiFi OK");
+  } else {
+    Serial.println("\n❌ Wi-Fi Fail");
+    display.print("WiFi Fail");
+  }
   display.display();
-  delay(1000);
+  delay(800);
 }
 
 void reconectarMQTT() {
-  while (!client.connected()) {
-    Serial.print("Conectando ao MQTT...");
-    if (client.connect(mqtt_ClientID)) {
-      Serial.println("Conectado!");
-    } else {
-      Serial.print("Erro: ");
-      Serial.println(client.state());
-      delay(2000);
-    }
+  Serial.print("MQTT… ");
+  if (client.connect(mqtt_ClientID)) {
+    Serial.println("conectado!");
+    displayMQTT(true);      // mostra apenas OK
+  } else {
+    Serial.print("falhou (");
+    Serial.print(client.state());
+    Serial.println(")");
+    // não exibe nada no display quando falha
   }
+}
+
+// Mostra “MQTT OK” somente quando conecta
+void displayMQTT(bool ok) {
+  if (!ok) return;                // se falhou, não mostra nada
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setCursor(0, 0);
+  display.print("MQTT OK");
+  display.display();
+  delay(800);
 }
 
 void configurarDisplay() {
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("Erro ao iniciar display");
+    Serial.println("❌ Erro OLED");
     while (true);
   }
+  display.cp437(true);            // habilita ° (código 248)
   display.setTextColor(WHITE);
   display.clearDisplay();
 }
 
-void medirTemperaturaUmidade() {
+void medirSensor() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
 
   if (isnan(h) || isnan(t)) {
-    Serial.println("⚠️ Erro ao ler DHT22!");
+    Serial.println("⚠️ Erro DHT22");
+    temperatura = umidade = NAN;
+  } else {
+    temperatura = t;
+    umidade     = h;
+    Serial.printf("🌡 %.1f°C | 💧 %.1f%%\n", temperatura, umidade);
+  }
+}
+
+void mostrarDisplay() {
+  display.clearDisplay();
+
+  if (isnan(temperatura) || isnan(umidade)) {
+    display.setTextSize(1);
+    display.setCursor(10, 25);
+    display.print("Erro DHT22");
+    display.display();
     return;
   }
 
-  umidade = h;
-  temperatura = t;
-
-  Serial.print("Temperatura: ");
-  Serial.print(temperatura);
-  Serial.println(" °C");
-
-  Serial.print("Umidade: ");
-  Serial.print(umidade);
-  Serial.println(" %");
-}
-
-void mostrarTemperaturaUmidade() {
-  mostrarMensagemNoDisplay("Temperatura", temperatura, " C");
-  mostrarMensagemNoDisplay("Umidade", umidade, " %");
-}
-
-void mostrarMensagemNoDisplay(const char* texto1, float valor, const char* unidade) {
-  display.clearDisplay();
+  // Títulos
   display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.print(texto1);
+  display.setCursor(8, 0);
+  display.print("Temp");
+  display.setCursor(80, 0);
+  display.print("Umid");
 
-  display.setTextSize(5);
-  display.setCursor(20, 20);
-  display.print(valor);
+  // Divisor
+  display.drawLine(64, 0, 64, 64, WHITE);
+
+  // Valores
+  display.setTextSize(2);
+  display.setCursor(6, 25);
+  display.print((int)temperatura);
+  display.setTextSize(1);
+  display.write(248);  // °
+  display.print("C");
 
   display.setTextSize(2);
-  display.print(unidade);
+  display.setCursor(78, 25);
+  display.print((int)umidade);
+  display.setTextSize(1);
+  display.print("%");
+
   display.display();
-  delay(2000);
 }
 
-void publicarTemperaturaUmidade() {
-  client.publish(topicoTemperatura, String(temperatura).c_str(), true);
-  client.publish(topicoUmidade, String(umidade).c_str(), true);
+void publicarMQTT() {
+  if (client.connected() && !isnan(temperatura) && !isnan(umidade)) {
+    client.publish(topTemp, String(temperatura, 1).c_str(), true);
+    client.publish(topUmid, String(umidade, 1).c_str(), true);
+  }
 }
