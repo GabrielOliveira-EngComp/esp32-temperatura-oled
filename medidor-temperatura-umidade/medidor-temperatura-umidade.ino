@@ -1,19 +1,29 @@
+// --- WIFI ---
 #include <WiFi.h>
+const char* ssid = "Nome da sua rede";        // troque pelo nome da sua rede
+const char* password = "Senha da sua rede";   // troque pela senha da sua rede
+WiFiClient espClient;
+
+// --- MQTT ---
+#include <PubSubClient.h>
+const char* mqtt_Broker = "iot.eclipse.org";
+const char* mqtt_ClientID = "esp32-thermo-gabriel";
+PubSubClient client(espClient);
+const char* topicoTemperatura = "gabriel/temperatura";
+const char* topicoUmidade = "gabriel/umidade";
+
+// --- DHT22 ---
 #include <DHT.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-
-// --- CONFIG WIFI ---
-const char* ssid = "Nome da sua rede";
-const char* password = "Senha da sua rede";
-
-// --- SENSOR DHT22 ---
 #define DHTPIN 9
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
+float temperatura = 0;
+float umidade = 0;
 
 // --- DISPLAY OLED ---
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
@@ -22,24 +32,28 @@ DHT dht(DHTPIN, DHTTYPE);
 TwoWire I2COLED = TwoWire(0);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &I2COLED, OLED_RESET);
 
-// --- VARIÁVEIS ---
-float temperatura = 0;
-float umidade = 0;
-
 void setup() {
   Serial.begin(115200);
   Serial.println("Iniciando sistema...");
 
   I2COLED.begin(OLED_SDA, OLED_SCL, 400000);
   configurarDisplay();
-
   dht.begin();
+
   conectarWifi();
+  client.setServer(mqtt_Broker, 1883);
 }
 
 void loop() {
+  if (!client.connected()) {
+    reconectarMQTT();
+  }
+
+  client.loop();  // importante para manter a conexão ativa
+
   medirTemperaturaUmidade();
   mostrarTemperaturaUmidade();
+  publicarTemperaturaUmidade();
   delay(5000);
 }
 
@@ -65,6 +79,19 @@ void conectarWifi() {
   display.print("WiFi OK");
   display.display();
   delay(1000);
+}
+
+void reconectarMQTT() {
+  while (!client.connected()) {
+    Serial.print("Conectando ao MQTT...");
+    if (client.connect(mqtt_ClientID)) {
+      Serial.println("Conectado!");
+    } else {
+      Serial.print("Erro: ");
+      Serial.println(client.state());
+      delay(2000);
+    }
+  }
 }
 
 void configurarDisplay() {
@@ -102,7 +129,7 @@ void mostrarTemperaturaUmidade() {
   mostrarMensagemNoDisplay("Umidade", umidade, " %");
 }
 
-void mostrarMensagemNoDisplay(const char* texto1, int valor, const char* unidade) {
+void mostrarMensagemNoDisplay(const char* texto1, float valor, const char* unidade) {
   display.clearDisplay();
   display.setTextSize(1);
   display.setCursor(0, 0);
@@ -114,7 +141,11 @@ void mostrarMensagemNoDisplay(const char* texto1, int valor, const char* unidade
 
   display.setTextSize(2);
   display.print(unidade);
-
   display.display();
   delay(2000);
+}
+
+void publicarTemperaturaUmidade() {
+  client.publish(topicoTemperatura, String(temperatura).c_str(), true);
+  client.publish(topicoUmidade, String(umidade).c_str(), true);
 }
