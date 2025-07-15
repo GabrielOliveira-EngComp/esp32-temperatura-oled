@@ -5,8 +5,8 @@
 #include <Adafruit_SSD1306.h>
 
 // --- CONFIG WIFI ---
-const char* ssid = "Ap402";
-const char* password = "281075Ad@#";
+const char* ssid = "Nome da sua rede";
+const char* password = "Senha da sua rede";
 
 // --- SENSOR DHT22 ---
 #define DHTPIN 9
