@@ -29,7 +29,11 @@ Criar um sistema embarcado com ESP32 que:
 
 ## 📡 Comunicação MQTT
 
-O ESP32 publica os dados nos seguintes tópicos:
+O ESP32 publica os dados
+
+## 📸 Imagem do Protótipo
+
+![Imagem do WhatsApp de 2025-07-15 à(s) 14 10 42_125d2705](https://github.com/user-attachments/assets/67f6a521-17d5-4b3a-8fc3-a692d8f5c31f)
 
 ## 👨‍💻 Autor
 - Gabriel Barbosa Fernandes de Oliveira
